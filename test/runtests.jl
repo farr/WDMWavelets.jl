@@ -70,4 +70,26 @@ end
             @assert all(abs.(max_power_index[2:end-1] .- predicted_max_power_index[2:end-1]) .<= 2)
         end
     end
+
+    @testset "Testing Single Element Inverse" begin
+        passed = 0
+        for _ in 1:100
+            nt = 64
+            nf = 64
+
+            i,j = rand(1:nt), rand(2:nf-1)
+            x = zeros(nt, nf)
+            x[i,j] = 1.0
+
+            xx = wdm_transform(wdm_inverse_transform(x, A_wavelet, d_wavelet), nt, nf, A_wavelet, d_wavelet)
+            if isapprox(x, xx, atol=1e-8)
+                passed += 1
+                continue
+            else
+                println("Failed for i = $i, j = $j")
+                break
+            end
+        end
+        println("Passed $passed")
+    end
 end

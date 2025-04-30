@@ -148,15 +148,16 @@ function wdm_transform(x, nt, nf, A, d)
     _, dF = wdm_dT_dF(nt, nf, 1)
 
     X = fft(x)
+    X = fftshift(X)
 
     fs = fftfreq(n)
     fs_phi = vcat(fs[1:nto2], fs[end-nto2+1:end])
     phi = @. Phi_unit(fs_phi / dF, A, d) / sqrt(dF)
+    phi = fftshift(phi)
     xmn = zeros(Complex{Float64}, nt, nf)
     for i in axes(xmn, 2)
-        Xs = circshift(X, -(i-1)*nto2)
-        Xsub = vcat(Xs[1:nto2], Xs[end-nto2+1:end])
-        xmn[:,i] = ifft( Xsub .* phi ) * nt
+        i0 = div(n,2) + 1 + (i-1)*nto2
+        xmn[:,i] = ifft( ifftshift(X[i0-nto2:i0+nto2-1] .* phi) ) * nt
     end
 
     C = C_matrix(nt, nf)
@@ -164,5 +165,48 @@ function wdm_transform(x, nt, nf, A, d)
     result = @. sqrt(2) * sign_matrix * real(C * xmn) / n
     result
 end
+
+function wdm_inverse_transform(x, A, d)
+    nt, nf = size(x)
+
+    n = nt * nf
+
+    nto2 = div(nt, 2)
+    no2 = div(n,2)
+
+    _, dF = wdm_dT_dF(nt, nf, 1)
+    
+    fs = fftfreq(n)
+    fs_phi = vcat(fs[1:nto2], fs[end-nto2+1:end])
+    phi = @. Phi_unit(fs_phi / dF, A, d) / sqrt(dF)
+    phi = fftshift(phi)
+
+    xf = zeros(Complex{Float64}, n)
+
+    xc = zeros(Complex{Float64}, nt, nf)
+    for i in axes(xc, 1)
+        for j in axes(xc, 2)
+            if (i + j - 2) % 2 == 0
+                xc[i,j] = x[i,j]
+            elseif (j-1) % 2 == 0
+                xc[i,j] = -1im * x[i,j]
+            else
+                xc[i,j] = 1im * x[i,j]
+            end
+        end
+    end
+    xc = fft(xc, 1)
+
+    for j in axes(xc, 2)
+        i0 = div(n,2) + 1 + (j-1)*nto2
+        xf[i0-nto2:i0+nto2-1] += fftshift(xc[:,j]) .* phi
+    end
+    xf = ifftshift(xf)
+    for i in 0:no2-1
+        xf[end-i] = conj(xf[i+2])
+    end
+
+    real.(ifft(xf)) ./ sqrt(2)
+end 
 
 end # module WDMWavelets
