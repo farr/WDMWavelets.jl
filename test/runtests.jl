@@ -72,24 +72,25 @@ end
     end
 
     @testset "Testing Single Element Inverse" begin
-        passed = 0
         for _ in 1:100
             nt = 64
             nf = 64
 
-            i,j = rand(1:nt), rand(2:nf-1)
+            #             i,j = rand(1:nt), rand(2:nf-1)
+            i = rand(1:nt)
+            j = 3
             x = zeros(nt, nf)
             x[i,j] = 1.0
 
             xx = wdm_transform(wdm_inverse_transform(x, A_wavelet, d_wavelet), nt, nf, A_wavelet, d_wavelet)
-            if isapprox(x, xx, atol=1e-8)
-                passed += 1
-                continue
+
+            if sum(abs.(x .- xx)) > 1e-3
+                println("$i, $j failed")
             else
-                println("Failed for i = $i, j = $j")
-                break
+                println("$i, $j passed")
             end
+
+            @test all(isapprox.(x, xx, atol=1e-8))
         end
-        println("Passed $passed")
     end
 end

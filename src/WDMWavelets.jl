@@ -2,7 +2,7 @@ module WDMWavelets
 
 using FFTW, SpecialFunctions
 
-export Phi_unit, fd_wavelet_basis_matrix, td_wavelet_basis_matrix, wdm_transform, wdm_dT_dF, wtm_times_frequencies
+export Phi_unit, fd_wavelet_basis_matrix, td_wavelet_basis_matrix, wdm_transform, wdm_dT_dF, wdm_times_frequencies, wdm_inverse_transform
 
 @doc raw"""
     Phi_unit(f, A, d)
@@ -58,6 +58,7 @@ function C_matrix(T, nt, nf)
             end
         end
     end
+    C[:,1] .= 0.5 # So that the m=0 bin works out right in the expression.
     C
 end
 
@@ -161,8 +162,7 @@ function wdm_transform(x, nt, nf, A, d)
     end
 
     C = C_matrix(nt, nf)
-    sign_matrix = [ (i*j % 2 == 0 ? 1 : -1) for i in 0:nt-1, j in 0:nf-1 ]
-    result = @. sqrt(2) * sign_matrix * real(C * xmn) / n
+    result = @. sqrt(2) * real(C * xmn) / n
     result
 end
 
@@ -172,7 +172,6 @@ function wdm_inverse_transform(x, A, d)
     n = nt * nf
 
     nto2 = div(nt, 2)
-    no2 = div(n,2)
 
     _, dF = wdm_dT_dF(nt, nf, 1)
     
@@ -181,32 +180,31 @@ function wdm_inverse_transform(x, A, d)
     phi = @. Phi_unit(fs_phi / dF, A, d) / sqrt(dF)
     phi = fftshift(phi)
 
-    xf = zeros(Complex{Float64}, n)
+    C = C_matrix(nt, nf)
 
-    xc = zeros(Complex{Float64}, nt, nf)
-    for i in axes(xc, 1)
-        for j in axes(xc, 2)
-            if (i + j - 2) % 2 == 0
-                xc[i,j] = x[i,j]
-            elseif (j-1) % 2 == 0
-                xc[i,j] = -1im * x[i,j]
-            else
-                xc[i,j] = 1im * x[i,j]
-            end
+    # Empirically determined sign matrix
+    sign_matrix = [ ((i % 2 == 0) && (j % 2 == 0)) || ((i % 2 == 1) && (j % 2 == 1)) ? 1 : -1 for i in 1:nt, j in 1:nf ]
+    sign_matrix[:,1] .= 1 # Not in the first row
+
+    xf = fft(x .* C .* sign_matrix, 1)
+    xf = fftshift(xf, 1) # Center the zero frequency
+
+    yf = zeros(Complex{Float64}, n)
+    for j in 1:nf
+        i0 = div(n,2) + 1 + (j-1)*nto2 # The zero-frequency of xf goes in this bin
+        xff = xf[:,j]
+        yf[i0-nto2:i0+nto2-1] .+= xff .* phi
+
+        # Negative frequencies
+        if j > 1
+            ii0 = div(n,2) - (j-1)*nto2 + 1
+            yf[ii0+nto2:-1:ii0-nto2+1] .+= conj.(xff .* phi)
         end
     end
-    xc = fft(xc, 1)
-
-    for j in axes(xc, 2)
-        i0 = div(n,2) + 1 + (j-1)*nto2
-        xf[i0-nto2:i0+nto2-1] += fftshift(xc[:,j]) .* phi
-    end
-    xf = ifftshift(xf)
-    for i in 0:no2-1
-        xf[end-i] = conj(xf[i+2])
-    end
-
-    real.(ifft(xf)) ./ sqrt(2)
+    yf = ifftshift(yf)
+    y = ifft(yf)
+    sqrt_2 = sqrt(2)
+    real.(y) ./ sqrt_2
 end 
 
 end # module WDMWavelets
