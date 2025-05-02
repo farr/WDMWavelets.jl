@@ -2,7 +2,7 @@ module WDMWavelets
 
 using FFTW, SpecialFunctions
 
-export Phi_unit, fd_wavelet_basis_matrix, td_wavelet_basis_matrix, wdm_transform, wdm_dT_dF, wdm_times_frequencies, wdm_inverse_transform
+export Phi_unit, wdm_transform, wdm_inverse_transform, wdm_dT_dF, wdm_times_frequencies
 
 @doc raw"""
     Phi_unit(f, A, d)
@@ -24,87 +24,6 @@ function Phi_unit(f, A, d)
     else
         zero(f)
     end
-end
-
-function C_matrix(nt, nf)
-    C_matrix(Complex{Float64}, nt, nf)
-end
-
-@doc raw"""
-    C_matrix([T,] nt, nf)
-
-Construct the ``C`` matrix from Eq. (10) of [Cornish
-(2020)](https://link.aps.org/doi/10.1103/PhysRevD.102.124038).
-
-The ``C`` matrix is used to pick out alternately the imaginary or real parts of
-the Fourier transform to construct the wavelet decomposition.  It is alternately
-`1` or `1im` according to whether the sum of the indices is even or odd.
-
-The ``C`` matrix is defined in the same way for the zero and highest frequency
-components (`C[:,1]` and `C[:,nf]`), but the extraction of the wavelet
-decomposition should not use it for these special cases; see [Necula, Klimenko,
-& Mitselmakher
-(2012)](https://iopscience.iop.org/article/10.1088/1742-6596/363/1/012032) for
-details.
-"""
-function C_matrix(T, nt, nf)
-    C = zeros(T, nt, nf)
-    for i in axes(C, 1)
-        for j in axes(C, 2)
-            if (i+j-2) % 2 == 0
-                C[i, j] = 1
-            else
-                C[i, j] = 1im
-            end
-        end
-    end
-    C[:,1] .= 0.5 # So that the m=0 bin works out right in the expression.
-    C
-end
-
-"""
-    fd_wavelet_basis_matrix(nt, nf, A, d)
-
-Returns the fourier domain representation of the wavelet basis functions.
-
-Returns a complex tensor of size `(nt, nf, nt*nf)` that represents the Fourier
-domain representation of the wavelet basis elements.
-"""
-function fd_wavelet_basis_matrix(nt, nf, A, d)
-    n = nt*nf
-
-    dT, dF = wdm_dT_dF(nt, nf, 1)
-
-    C = C_matrix(nt, nf)
-
-    ns = 0:nt-1
-    ms = 0:nf-1
-    fs = fftfreq(n)
-
-    ns = reshape(ns, nt, 1, 1)
-    ms = reshape(ms, 1, nf, 1)
-    fs = reshape(fs, 1, 1, n)
-    C = reshape(C, nt, nf, 1)
-
-    @. exp(-1im * ns * 2 * pi * fs * dT) * (C * Phi_unit(fs / dF - ms, A, d) + conj(C) * Phi_unit(fs / dF + ms, A, d)) / sqrt(2*dF)
-end
-
-"""
-    td_wavelet_basis_matrix(nt, nf, A, d)
-
-Returns the time-domain representation of the wavelet basis functions.
-
-Returns a real tensor of size `(nt, nf, nt*nf)` that represents the time domain
-representation of the wavelet basis elements; literally the inverse Fourier
-transform of the Fourier domain representation.
-
-These basis functions are orthonormal (see the associated test).
-
-TODO: currently the lowest-frequency and highest-frequency basis functions are
-incorrectly computed presently, and are not orthonormal.
-"""
-function td_wavelet_basis_matrix(nt, nf, A, d)
-    real(ifft(fd_wavelet_basis_matrix(nt, nf, A, d), 3))
 end
 
 """
@@ -149,23 +68,46 @@ function wdm_transform(x, nt, nf, A, d)
     _, dF = wdm_dT_dF(nt, nf, 1)
 
     X = fft(x)
-    X = fftshift(X)
+
+    # We are going to ignore the first frequency bin because it's fucked up!
+    # For the other frequency bins, we have:
+    # wnm = sum_k x[k] * gnm[k]
+    # wnm = sum_k (sum_l exp(2*pi*i*l*k/N) X[l]) (sum_j exp(2*pi*i*j*k/N) Gnm[j])
+    # wnm = sum_l X[l] Gnm[N-l]
+    # wnm = sum_l X[l] exp(-2*pi*i*n*(N-l)*Nf/N) (Cnm*G[(N-l) - m*Nt/2] + conj(Cnm)*G[(N-l) + m*Nt/2]))
+    # wnm = sum_l X[l] exp(2*pi*i*n*l*Nf/N) (Cnm*G[l + m*Nt/2] + conj(Cnm)*G[l - m*Nt/2])
+    # wnm = sum_l X[l] exp(2*pi*i*n*l/Nt) (Cnm*G[l + m*Nt/2] + conj(Cnm)*G[l - m*Nt/2])
+    # wnm = 2*Re conj(Cnm) sum_l exp(2*pi*i*n*l/Nt) X[l] G[l - m*Nt/2]
 
     fs = fftfreq(n)
     fs_phi = vcat(fs[1:nto2], fs[end-nto2+1:end])
     phi = @. Phi_unit(fs_phi / dF, A, d) / sqrt(dF)
-    phi = fftshift(phi)
-    xmn = zeros(Complex{Float64}, nt, nf)
-    for i in axes(xmn, 2)
-        i0 = div(n,2) + 1 + (i-1)*nto2
-        xmn[:,i] = ifft( ifftshift(X[i0-nto2:i0+nto2-1] .* phi) ) * nt
-    end
 
-    C = C_matrix(nt, nf)
-    result = @. sqrt(2) * real(C * xmn) / n
+    xnm = zeros(Complex{Float64}, nt, nf)
+
+    # Load up the columns of xmn:
+    for m in 2:nf
+        l0 = (m-1)*div(nt,2) + 1
+        xnm[1:div(nt,2),m] .= X[l0:l0+div(nt,2)-1] .* phi[1:div(nt,2)] # Positive frequencies
+        xnm[div(nt,2)+1:end,m] .= X[l0-div(nt,2):l0-1] .* phi[div(nt,2)+1:end] # Negative frequencies
+    end 
+    ifft!(xnm, 1)  # In-place inverse FFT
+
+    result = zeros(nt, nf)
+    for n in 1:nt
+        for m in 2:nf
+            C = ((n+m-2) % 2 == 0) ? 1 : 1im
+            result[n,m] = sqrt(2) * real(conj(C) * xnm[n,m]) / nf # Normalization is * (nt / n), which is *nf.
+        end
+    end
     result
 end
 
+# x[k] = sum_{nm} wnm gnm[k]
+# x[k] = sum_{nm} wnm sum_l exp(2*pi*i*l*k/N) Gnm[l]
+# x[k] = sum_{nm} wnm sum_l exp(2*pi*i*l*k/N) exp(-2*pi*i*n*l/Nt) (Cnm * G[l - m*Nt/2] + conj(Cnm) * G[l + m*Nt/2])])
+# x[k] = sum_l sum_m exp(2*pi*i*l*k/N) (G[l - m*Nt/2] * Ylm + G[l + m*Nt/2] * conj(Ylm))
+# => X[l] = (G[l - m*Nt/2] * Ylm + G[l + m*Nt/2] * conj(Y(-l)m))
 function wdm_inverse_transform(x, A, d)
     nt, nf = size(x)
 
@@ -178,33 +120,31 @@ function wdm_inverse_transform(x, A, d)
     fs = fftfreq(n)
     fs_phi = vcat(fs[1:nto2], fs[end-nto2+1:end])
     phi = @. Phi_unit(fs_phi / dF, A, d) / sqrt(dF)
-    phi = fftshift(phi)
 
-    C = C_matrix(nt, nf)
-
-    # Empirically determined sign matrix
-    sign_matrix = [ ((i % 2 == 0) && (j % 2 == 0)) || ((i % 2 == 1) && (j % 2 == 1)) ? 1 : -1 for i in 1:nt, j in 1:nf ]
-    sign_matrix[:,1] .= 1 # Not in the first row
-
-    xf = fft(x .* C .* sign_matrix, 1)
-    xf = fftshift(xf, 1) # Center the zero frequency
-
-    yf = zeros(Complex{Float64}, n)
-    for j in 1:nf
-        i0 = div(n,2) + 1 + (j-1)*nto2 # The zero-frequency of xf goes in this bin
-        xff = xf[:,j]
-        yf[i0-nto2:i0+nto2-1] .+= xff .* phi
-
-        # Negative frequencies
-        if j > 1
-            ii0 = div(n,2) - (j-1)*nto2 + 1
-            yf[ii0+nto2:-1:ii0-nto2+1] .+= conj.(xff .* phi)
+    ylm = zeros(Complex{Float64}, nt, nf)
+    for n in 1:nt
+        for m in 2:nf
+            C = ((n+m-2) % 2 == 0) ? 1 : 1im
+            ylm[n,m] = C * x[n,m] / sqrt(2)
         end
     end
-    yf = ifftshift(yf)
-    y = ifft(yf)
-    sqrt_2 = sqrt(2)
-    real.(y) ./ sqrt_2
+    fft!(ylm, 1)
+
+    X = zeros(Complex{Float64}, n)
+    for m in 2:nf
+        l0 = (m-1)*div(nt,2) + 1
+        X[l0:l0+div(nt,2)-1] .+= ylm[1:div(nt,2),m] .* phi[1:div(nt,2)] # Positive frequencies
+        X[l0-div(nt,2):l0-1] .+= ylm[div(nt,2)+1:end,m] .* phi[div(nt,2)+1:end] # Negative frequencies
+
+        # The FFT of the conjugate is the backwards of the FFT of the original.
+        l1 = n - (m-1)*div(nt,2) + 1
+        X[l1] = conj(ylm[1,m]) * phi[1] # Zero frequency
+
+        X[l1+1:l1+div(nt,2)-1] .+= conj(ylm[end:-1:div(nt,2)+2,m]) .* phi[2:div(nt,2)] # Positive frequencies
+        X[l1-div(nt,2):l1-1] .+= conj(ylm[div(nt,2)+1:-1:2,m]) .* phi[div(nt,2)+1:end] # Negative frequencies
+    end
+    ifft!(X)
+    real.(X)
 end 
 
 end # module WDMWavelets

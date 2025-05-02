@@ -9,31 +9,6 @@ function chirp(ts, Ac, As, f, fdot)
 end
 
 @testset "WDMWavelets.jl Tests" begin
-    @testset "TD Wavelet Orthogonality" begin
-        nt = 4
-        nf = 4
-        n = nt*nf
-        dt = 1.0
-
-        g_matrix_td = td_wavelet_basis_matrix(nt, nf, A_wavelet, d_wavelet)
-
-        # Presently something is messed up for the highest and lowest
-        # frequencies---so ignore them.
-        for i in 1:nt
-            for j in 2:nf-1
-                for ii in 1:nt
-                    for jj in 2:nf-1
-                        if i == ii && j == jj
-                            @test isapprox(sum(g_matrix_td[i,j,:] .* g_matrix_td[ii,jj,:]), 1.0, rtol=1e-8, atol=0)
-                        else
-                            @test isapprox(sum(g_matrix_td[i,j,:] .* g_matrix_td[ii,jj,:]), 0.0, rtol=0, atol=1e-8)
-                        end
-                    end
-                end
-            end
-        end
-    end
-
     @testset "Wavelet Transform of Chirp" begin
         dt = 1/pi
         fny = 1/(2*dt)
@@ -72,25 +47,18 @@ end
     end
 
     @testset "Testing Single Element Inverse" begin
-        for _ in 1:100
-            nt = 64
-            nf = 64
+        nt = 32
+        nf = 32
 
-            #             i,j = rand(1:nt), rand(2:nf-1)
-            i = rand(1:nt)
-            j = 3
-            x = zeros(nt, nf)
-            x[i,j] = 1.0
+        for i in 1:nt
+            for j in 2:nf
+                x = zeros(nt, nf)
+                x[i,j] = 1.0
 
-            xx = wdm_transform(wdm_inverse_transform(x, A_wavelet, d_wavelet), nt, nf, A_wavelet, d_wavelet)
+                xx = wdm_transform(wdm_inverse_transform(x, A_wavelet, d_wavelet), nt, nf, A_wavelet, d_wavelet)
 
-            if sum(abs.(x .- xx)) > 1e-3
-                println("$i, $j failed")
-            else
-                println("$i, $j passed")
+                @test all(isapprox.(x, xx, atol=1e-8))
             end
-
-            @test all(isapprox.(x, xx, atol=1e-8))
         end
     end
 end
